@@ -148,6 +148,17 @@ class EtherscanClient:
         raw_balance = hex_int(result)
         return Decimal(raw_balance) / (Decimal(10) ** token.decimals)
 
+    def token_balance_latest(self, token: Token, holder: str) -> Decimal:
+        """Read the latest ERC-20 balance through Etherscan's tokenbalance endpoint."""
+        result = self._get(
+            module="account",
+            action="tokenbalance",
+            contractaddress=token.address,
+            address=holder,
+            tag="latest",
+        )
+        return Decimal(result) / (Decimal(10) ** token.decimals)
+
     def contract_creation(self, token: Token) -> tuple[int, datetime]:
         result = self._get(
             module="contract",

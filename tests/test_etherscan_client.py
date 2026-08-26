@@ -111,6 +111,25 @@ def test_historical_token_balance_encodes_holder():
     assert params["data"].endswith(holder.removeprefix("0x"))
 
 
+def test_latest_token_balance_applies_decimals():
+    response = Mock()
+    response.status_code = 200
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "status": "1",
+        "message": "OK",
+        "result": "1250000",
+    }
+    client = EtherscanClient("test-key", min_request_interval=0)
+    client.session.get = Mock(return_value=response)
+    holder = "0x5754284f345afc66a98fbb0a0afe71e0f007b949"
+
+    assert client.token_balance_latest(TOKENS["USDT"], holder) == Decimal("1.25")
+    params = client.session.get.call_args.kwargs["params"]
+    assert params["action"] == "tokenbalance"
+    assert params["tag"] == "latest"
+
+
 def test_coingecko_keyless_token_price():
     response = Mock()
     response.status_code = 200

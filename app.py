@@ -20,22 +20,30 @@ from etherscan_client import (
     topic_address,
 )
 from market_data import MarketDataError, coingecko_price_usd
+from tronscan_client import (
+    TRON_ZERO_ADDRESS,
+    USDT_CONTRACT as TRON_USDT_CONTRACT,
+    USDT_TREASURY as TRON_TREASURY_ADDRESS,
+    TronScanClient,
+    TronScanError,
+    parse_tron_transfer,
+)
 
 
-st.set_page_config(page_title="Ethereum Mint & Burn Tracker", page_icon="⟠", layout="wide")
+st.set_page_config(page_title="Mint & Burn Tracker", page_icon="⟠", layout="wide")
 
 TREASURY_ADDRESS = "0x5754284f345afc66a98fbB0a0Afe71e0F007B949"
 TRUE_ACTIVITY = "True Mint/Redeem"
 SYNTHETIC_ACTIVITY = "Synthetic Mint/Redeem"
 
 
-def api_key() -> str | None:
+def config_secret(name: str) -> str | None:
     """Read local environment first, then Streamlit Community Cloud secrets."""
-    value = os.getenv("ETHERSCAN_API_KEY")
+    value = os.getenv(name)
     if value:
         return value
     try:
-        return st.secrets.get("ETHERSCAN_API_KEY")
+        return st.secrets.get(name)
     except (FileNotFoundError, KeyError):
         return None
 
@@ -54,6 +62,7 @@ def fetch_events(
     dict[str, float],
     dict[str, datetime],
     dict[str, float | None],
+    dict[str, float],
 ]:
     client = EtherscanClient(key)
     start = datetime.fromisoformat(start_iso)
@@ -66,6 +75,7 @@ def fetch_events(
     opening_supplies: dict[str, float] = {}
     launch_times: dict[str, datetime] = {}
     prices: dict[str, float | None] = {}
+    treasury_balances: dict[str, float] = {}
 
     for symbol in symbols:
         token = TOKENS[symbol]
@@ -86,6 +96,10 @@ def fetch_events(
             except (MarketDataError, requests.RequestException) as exc:
                 prices[symbol] = None
                 warnings.append(f"Current {symbol} price is unavailable from CoinGecko: {exc}")
+        if symbol in {"USDT", "XAUT"}:
+            treasury_balances[symbol] = float(
+                client.token_balance_latest(token, TREASURY_ADDRESS)
+            )
 
         if query_from_block > to_block:
             continue
@@ -154,7 +168,99 @@ def fetch_events(
         supply_frame = supply_frame.drop_duplicates(["tx_hash", "log_index"]).sort_values(
             "timestamp", ascending=False
         )
-    return frame, supply_frame, warnings, opening_supplies, launch_times, prices
+    return (
+        frame,
+        supply_frame,
+        warnings,
+        opening_supplies,
+        launch_times,
+        prices,
+        treasury_balances,
+    )
+
+
+@st.cache_data(ttl=21_600, show_spinner=False)
+def fetch_tron_events(
+    key: str, start_iso: str, end_iso: str, activity_mode: str
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    list[str],
+    dict[str, float],
+    dict[str, datetime],
+    dict[str, float | None],
+    dict[str, float],
+]:
+    client = TronScanClient(key)
+    start = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    now = datetime.now(timezone.utc) - timedelta(minutes=1)
+    start_ms, end_ms, now_ms = (
+        int(start.timestamp() * 1000),
+        int(end.timestamp() * 1000),
+        int(now.timestamp() * 1000),
+    )
+    current_supply, launched_at = client.token_details()
+    warnings: list[str] = []
+
+    def load(event_type: str, participant: str, until_ms: int) -> list[dict]:
+        rows, capped = client.transfers(
+            event_type, participant, start_ms, until_ms
+        )
+        if capped:
+            warnings.append(
+                f"TRC-20 USDT {event_type.lower()} results reached TronScan's 10,000-record "
+                "cap. Choose a shorter date range for complete results."
+            )
+        parsed = [parse_tron_transfer(row, event_type, index) for index, row in enumerate(rows)]
+        return [record for record in parsed if record["amount"] > 0]
+
+    # Canonical events through now let us reverse current total supply back to
+    # the selected start, even when the selected end date is historical.
+    true_records = load("Mint", TRON_ZERO_ADDRESS, now_ms) + load(
+        "Burn", TRON_ZERO_ADDRESS, now_ms
+    )
+    opening_supply = float(current_supply) - sum(
+        record["amount"] if record["type"] == "Mint" else -record["amount"]
+        for record in true_records
+    )
+    supply_records = [record for record in true_records if record["timestamp"] <= end]
+
+    if activity_mode == TRUE_ACTIVITY:
+        records = supply_records.copy()
+    else:
+        records = load("Mint", TRON_TREASURY_ADDRESS, end_ms) + load(
+            "Burn", TRON_TREASURY_ADDRESS, end_ms
+        )
+        records = [
+            record
+            for record in records
+            if (
+                record["to"] if record["type"] == "Mint" else record["from"]
+            )
+            != TRON_ZERO_ADDRESS
+        ]
+
+    columns = ["timestamp", "token", "type", "amount", "from", "to", "tx_hash", "block", "log_index"]
+
+    def make_frame(rows: list[dict]) -> pd.DataFrame:
+        frame = pd.DataFrame(rows, columns=columns)
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+        if not frame.empty:
+            frame = frame.drop_duplicates(["tx_hash", "log_index"]).sort_values(
+                "timestamp", ascending=False
+            )
+        return frame
+
+    return (
+        make_frame(records),
+        make_frame(supply_records),
+        warnings,
+        {"USDT": opening_supply},
+        {"USDT": launched_at},
+        {"USDT": 1.0},
+        {"USDT": float(client.treasury_balance())},
+    )
 
 
 def compact_number(value: float) -> str:
@@ -210,9 +316,9 @@ timezone_labels = {
     "Asia/Tokyo": "Tokyo",
 }
 header_column, timezone_column = st.columns([4, 1.35], vertical_alignment="center")
-header_column.title("Ethereum Mint & Burn Tracker")
+header_column.title("Mint & Burn Tracker")
 header_column.caption(
-    "Canonical ERC-20 supply events for USDT, USAT, XAUT, and PAXG on Ethereum mainnet"
+    "Ethereum ERC-20 and Tron TRC-20 mint, redeem, and treasury activity"
 )
 timezone_column.selectbox(
     "Local timezone",
@@ -238,6 +344,18 @@ for column, symbol in zip(asset_columns, TOKENS):
     )
 
 selected = [st.session_state.selected_asset]
+if "chain_network" not in st.session_state:
+    st.session_state.chain_network = "ERC20"
+if selected[0] == "USDT":
+    st.radio(
+        "Network",
+        options=["ERC20", "TRC20"],
+        key="chain_network",
+        horizontal=True,
+        width="content",
+        label_visibility="collapsed",
+    )
+effective_network = st.session_state.chain_network if selected[0] == "USDT" else "ERC20"
 if "activity_mode" not in st.session_state:
     st.session_state.activity_mode = TRUE_ACTIVITY
 if selected[0] in {"USDT", "XAUT"}:
@@ -267,12 +385,14 @@ if refresh_column.button("Refresh now", width="stretch"):
 if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
     visible_days = (date_range[1] - date_range[0]).days + 1
     st.caption(f"Currently showing past {visible_days:,} days of data.")
-st.caption("Data is cached for 6 hours. Use Refresh now to manually repull from Etherscan.")
+data_source = "TronScan" if effective_network == "TRC20" else "Etherscan"
+st.caption(f"Data is cached for 6 hours. Use Refresh now to manually repull from {data_source}.")
 
-key = api_key()
+key_name = "TRONSCAN_API_KEY" if effective_network == "TRC20" else "ETHERSCAN_API_KEY"
+key = config_secret(key_name)
 if not key:
-    st.error("No Etherscan API key found.")
-    st.code('ETHERSCAN_API_KEY="your_key_here"', language="toml")
+    st.error(f"No {data_source} API key found.")
+    st.code(f'{key_name}="your_key_here"', language="toml")
     st.info(
         "For local use, set the environment variable or add the line above to "
         "`.streamlit/secrets.toml`. On Streamlit Community Cloud, add it in App settings → Secrets."
@@ -298,19 +418,36 @@ safe_chain_time = datetime.now(timezone.utc) - timedelta(minutes=1)
 end_dt = min(requested_end, safe_chain_time)
 
 try:
-    with st.spinner("Loading Ethereum events from Etherscan…"):
-        events, supply_events, warnings, opening_supplies, launch_times, prices = fetch_events(
-            key,
-            tuple(selected),
-            start_dt.isoformat(),
-            end_dt.isoformat(),
-            effective_activity_mode,
-        )
-except (EtherscanError, ValueError) as exc:
-    st.error(f"Etherscan could not return the requested data: {exc}")
+    with st.spinner(f"Loading {effective_network} events from {data_source}…"):
+        if effective_network == "TRC20":
+            result = fetch_tron_events(
+                key,
+                start_dt.isoformat(),
+                end_dt.isoformat(),
+                effective_activity_mode,
+            )
+        else:
+            result = fetch_events(
+                key,
+                tuple(selected),
+                start_dt.isoformat(),
+                end_dt.isoformat(),
+                effective_activity_mode,
+            )
+        (
+            events,
+            supply_events,
+            warnings,
+            opening_supplies,
+            launch_times,
+            prices,
+            treasury_balances,
+        ) = result
+except (EtherscanError, TronScanError, ValueError) as exc:
+    st.error(f"{data_source} could not return the requested data: {exc}")
     st.stop()
 except Exception as exc:
-    st.error(f"Could not reach Etherscan: {exc}")
+    st.error(f"Could not reach {data_source}: {exc}")
     st.stop()
 
 for warning in warnings:
@@ -354,16 +491,28 @@ else:
     supply_plot = supply.loc[supply_plot_mask].copy()
 
 assets_outstanding = float(supply["supply"].iloc[-1]) if not supply.empty else 0.0
-metric_cols = st.columns(5)
+has_treasury_metric = active_symbol in {"USDT", "XAUT"}
+metric_cols = st.columns(6 if has_treasury_metric else 5)
 metric_cols[0].metric(
     f"Net {active_symbol} outstanding",
     compact_number(assets_outstanding),
     help=f"As of {end_date} UTC",
 )
-metric_cols[1].metric("Minted", compact_number(mints))
-metric_cols[2].metric("Burned", compact_number(burns))
-metric_cols[3].metric("Net issuance", compact_number(mints - burns))
-metric_cols[4].metric("Events", f"{len(events):,}")
+metric_offset = 1
+if has_treasury_metric:
+    treasury_address = (
+        TRON_TREASURY_ADDRESS if effective_network == "TRC20" else TREASURY_ADDRESS
+    )
+    metric_cols[1].metric(
+        "Current Treasury Balance",
+        compact_number(treasury_balances[active_symbol]),
+        help=f"Latest {active_symbol} balance at {treasury_address}",
+    )
+    metric_offset = 2
+metric_cols[metric_offset].metric("Minted", compact_number(mints))
+metric_cols[metric_offset + 1].metric("Burned", compact_number(burns))
+metric_cols[metric_offset + 2].metric("Net issuance", compact_number(mints - burns))
+metric_cols[metric_offset + 3].metric("Events", f"{len(events):,}")
 
 st.subheader("Activity over time")
 if chart_data.empty:
@@ -479,7 +628,12 @@ local_zone = ZoneInfo(st.session_state.local_timezone)
 local_label = timezone_labels[st.session_state.local_timezone]
 display["local_timestamp"] = display["timestamp"].dt.tz_convert(local_zone).dt.strftime("%Y-%m-%d %H:%M:%S %Z")
 display["timestamp"] = display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-display["transaction"] = display["tx_hash"].map(lambda h: f"https://etherscan.io/tx/{h}")
+transaction_base = (
+    "https://tronscan.org/#/transaction/"
+    if effective_network == "TRC20"
+    else "https://etherscan.io/tx/"
+)
+display["transaction"] = display["tx_hash"].map(lambda h: transaction_base + h)
 display = display[["timestamp", "local_timestamp", "token", "type", "amount", "from", "to", "block", "transaction"]]
 st.dataframe(
     display,
@@ -489,7 +643,7 @@ st.dataframe(
         "timestamp": "UTC timestamp",
         "local_timestamp": f"Local timestamp ({local_label})",
         "amount": st.column_config.NumberColumn(format="localized"),
-        "transaction": st.column_config.LinkColumn("Etherscan", display_text="View transaction"),
+        "transaction": st.column_config.LinkColumn(data_source, display_text="View transaction"),
     },
 )
 st.download_button(
@@ -508,3 +662,7 @@ with st.expander("Methodology and contract addresses"):
     )
     for token in TOKENS.values():
         st.markdown(f"- **{token.symbol}** — [`{token.address}`](https://etherscan.io/token/{token.address})")
+    st.markdown(
+        f"- **USDT (TRC20)** — [`{TRON_USDT_CONTRACT}`]"
+        f"(https://tronscan.org/#/token20/{TRON_USDT_CONTRACT})"
+    )
