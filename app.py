@@ -375,11 +375,13 @@ effective_activity_mode = (
 today = datetime.now(timezone.utc).date()
 if "date_filter" not in st.session_state:
     st.session_state.date_filter = (previous_month(today), today)
-date_column, refresh_column = st.columns([5, 1], vertical_alignment="bottom")
-date_range = date_column.date_input(
-    "UTC date range", max_value=today, key="date_filter"
+date_range = st.date_input(
+    "UTC date range",
+    max_value=today,
+    key="date_filter",
+    width=320,
 )
-if refresh_column.button("Refresh now", width="stretch"):
+if st.button("Refresh now", width="content"):
     st.cache_data.clear()
     st.rerun()
 if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
