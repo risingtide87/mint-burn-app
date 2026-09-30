@@ -498,6 +498,8 @@ for warning in warnings:
 
 mints = events.loc[events["type"] == "Mint", "amount"].sum()
 burns = events.loc[events["type"] == "Burn", "amount"].sum()
+mint_events = int((events["type"] == "Mint").sum())
+burn_events = int((events["type"] == "Burn").sum())
 active_symbol = selected[0]
 chart_data = events.copy()
 chart_data["date"] = chart_data["timestamp"].dt.date
@@ -535,7 +537,7 @@ else:
 
 assets_outstanding = float(supply["supply"].iloc[-1]) if not supply.empty else 0.0
 has_treasury_metric = active_symbol in {"USDT", "XAUT"}
-metric_cols = st.columns(6 if has_treasury_metric else 5)
+metric_cols = st.columns(8 if has_treasury_metric else 7)
 metric_cols[0].metric(
     f"Net {active_symbol} outstanding",
     compact_number(assets_outstanding),
@@ -555,7 +557,9 @@ if has_treasury_metric:
 metric_cols[metric_offset].metric("Minted", compact_number(mints))
 metric_cols[metric_offset + 1].metric("Burned", compact_number(burns))
 metric_cols[metric_offset + 2].metric("Net issuance", compact_number(mints - burns))
-metric_cols[metric_offset + 3].metric("Events", f"{len(events):,}")
+metric_cols[metric_offset + 3].metric("Mint Events", f"{mint_events:,}")
+metric_cols[metric_offset + 4].metric("Burn Events", f"{burn_events:,}")
+metric_cols[metric_offset + 5].metric("Total Events", f"{len(events):,}")
 
 st.subheader("Activity over time")
 if chart_data.empty:
