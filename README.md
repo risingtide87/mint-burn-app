@@ -16,6 +16,7 @@ For USDT and XAUT, the dashboard can alternatively classify transfers out of Tet
 3. Provide your API key using either option:
 
    ```powershell
+   $env:MINT_BURN_APP_PASS = "choose-a-strong-password"
    $env:ETHERSCAN_API_KEY = "your_key_here"
    $env:TRONSCAN_API_KEY = "your_key_here"
    ```
@@ -23,6 +24,7 @@ For USDT and XAUT, the dashboard can alternatively classify transfers out of Tet
    Or create `.streamlit/secrets.toml` (gitignored):
 
    ```toml
+   MINT_BURN_APP_PASS = "choose-a-strong-password"
    ETHERSCAN_API_KEY = "your_key_here"
    TRONSCAN_API_KEY = "your_key_here"
    ```
@@ -38,9 +40,13 @@ For USDT and XAUT, the dashboard can alternatively classify transfers out of Tet
 Deploy this repository with `app.py` as the entry point. In **App settings → Secrets**, add:
 
 ```toml
+MINT_BURN_APP_PASS = "choose-a-strong-password"
 ETHERSCAN_API_KEY = "your_key_here"
 TRONSCAN_API_KEY = "your_key_here"
 ```
+
+The app fails closed when `MINT_BURN_APP_PASS` is not configured. Successful login is
+remembered for the current Streamlit browser session.
 
 The app checks the local environment variable first, then Streamlit secrets. API responses are cached for six hours and can be manually refreshed from the dashboard. Each token/event query paginates up to 10,000 logs; the UI warns when that safety cap is reached so the date range can be shortened.
 

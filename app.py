@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 from calendar import monthrange
 from datetime import datetime, time, timedelta, timezone
@@ -46,6 +47,46 @@ def config_secret(name: str) -> str | None:
         return st.secrets.get(name)
     except (FileNotFoundError, KeyError):
         return None
+
+
+def require_password() -> None:
+    """Stop the app at a password prompt until this browser session is authenticated."""
+    expected_password = config_secret("MINT_BURN_APP_PASS")
+    if not expected_password:
+        st.error("App access is not configured because MINT_BURN_APP_PASS is missing.")
+        st.stop()
+
+    if st.session_state.get("_mint_burn_authenticated", False):
+        st.session_state.pop("_mint_burn_password", None)
+        st.session_state.pop("_mint_burn_password_error", None)
+        return
+
+    st.title("Mint & Burn Tracker")
+    st.caption("Enter the app password to continue.")
+    with st.form("mint_burn_login"):
+        st.text_input(
+            "Password",
+            type="password",
+            key="_mint_burn_password",
+            autocomplete="current-password",
+        )
+        submitted = st.form_submit_button("Sign in", type="primary")
+
+    if submitted:
+        entered_password = st.session_state.get("_mint_burn_password", "")
+        if hmac.compare_digest(
+            entered_password.encode("utf-8"), expected_password.encode("utf-8")
+        ):
+            st.session_state["_mint_burn_authenticated"] = True
+            st.rerun()
+        st.session_state["_mint_burn_password_error"] = True
+
+    if st.session_state.get("_mint_burn_password_error", False):
+        st.error("Incorrect password.")
+    st.stop()
+
+
+require_password()
 
 
 @st.cache_data(ttl=21_600, show_spinner=False)
