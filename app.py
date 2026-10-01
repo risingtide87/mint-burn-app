@@ -34,8 +34,8 @@ from tronscan_client import (
 st.set_page_config(page_title="Mint & Burn Tracker", page_icon="⟠", layout="wide")
 
 TREASURY_ADDRESS = "0x5754284f345afc66a98fbB0a0Afe71e0F007B949"
-TRUE_ACTIVITY = "True Mint/Redeem"
-SYNTHETIC_ACTIVITY = "Synthetic Mint/Redeem"
+TRUE_ACTIVITY = "Treasury Mint/Redeem"
+SYNTHETIC_ACTIVITY = "Transfer Mint/Redeem"
 
 
 def config_secret(name: str) -> str | None:
